@@ -1,5 +1,4 @@
 import os
-import time
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -36,36 +35,17 @@ def run_ai_growth_reasoning(signal: GrowthSignal) -> str:
     Format: State the EXACT action command first, followed by a concise 2-sentence rationale.
     """
 
-    # Primary model recommended by Google, with standard fallbacks for temporary 503 spikes
-    candidate_models = [
-        "gemini-3.8-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
-    ]
-
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
         
-        last_exception = None
-        for model_name in candidate_models:
-            # Try twice per model to handle momentary capacity spikes
-            for _ in range(2):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                    )
-                    if response.text:
-                        return response.text
-                except Exception as e:
-                    last_exception = e
-                    time.sleep(1)  # Brief 1s delay before retry/fallback
-                    continue
-
-        return f"AI Generation Error: {str(last_exception)}"
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt,
+        )
+        return response.text
     except Exception as e:
-        return f"Initialization Error: {str(e)}"
+        return f"AI Generation Error: {str(e)}"
 
 @app.get("/")
 def health_check():
