@@ -40,7 +40,7 @@ def run_ai_growth_reasoning(signal: GrowthSignal) -> str:
         """
         
         response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
+            model='gemini-3.8-flash',
             contents=prompt,
         )
         return response.text
