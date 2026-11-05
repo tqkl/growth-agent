@@ -1,4 +1,5 @@
 import os
+import time
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -39,13 +40,23 @@ def run_ai_growth_reasoning(signal: GrowthSignal) -> str:
         from google import genai
         client = genai.Client(api_key=api_key)
         
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
-            contents=prompt,
-        )
-        return response.text
+        # Retry loop targeting gemini-3.5-flash-lite to handle 503 high-demand spikes
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-3.5-flash-lite',
+                    contents=prompt,
+                )
+                if response.text:
+                    return response.text
+            except Exception as e:
+                if attempt == 2:
+                    return f"AI Generation Error: {str(e)}"
+                time.sleep(1)
+
+        return "AI Generation Error: No response generated."
     except Exception as e:
-        return f"AI Generation Error: {str(e)}"
+        return f"Initialization Error: {str(e)}"
 
 @app.get("/")
 def health_check():
