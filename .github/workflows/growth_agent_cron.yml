@@ -1,0 +1,25 @@
+name: AI Growth Agent Autopilot Simulator
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Runs automatically every 6 hours
+  workflow_dispatch:       # Enables manual 1-click trigger button in GitHub UI
+
+jobs:
+  simulate-telemetry-ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch Inbound MMP Performance Telemetry to Render
+        run: |
+          curl -X 'POST' \
+            'https://growth-agent-p8zx.onrender.com/webhooks/mmp-event' \
+            -H 'accept: */*' \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "event_name": "ad_performance_alert",
+              "campaign_name": "US_EB3_Conversion_ASC",
+              "adset_id": "act_99887766",
+              "current_cpa": 54.20,
+              "target_cpa": 30.00,
+              "frequency": 4.9
+            }'
