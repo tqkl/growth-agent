@@ -25,11 +25,12 @@ def send_telegram_alert(adset_id: str, action_summary: str) -> str:
     if not bot_token or not chat_id:
         return "SKIPPED: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing on Render."
 
-    message = f"🚨 *AI GROWTH AGENT ACTION EXECUTED*\n\n*Target AdSet:* `{adset_id}`\n\n{action_summary}"
+    # Plain text format prevents Telegram Markdown parsing crashes on AI outputs
+    message = f"🚨 AI GROWTH AGENT ACTION EXECUTED\n\nTarget AdSet: {adset_id}\n\n{action_summary}"
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     
     try:
-        response = requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+        response = requests.post(url, json={"chat_id": chat_id, "text": message})
         if response.status_code == 200:
             return "SUCCESS: TELEGRAM_PUSH_ALERT_DISPATCHED"
         return f"FAILED: Telegram API returned {response.status_code} - {response.text}"
