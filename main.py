@@ -503,7 +503,7 @@ def set_status(lead_id: str, status: str) -> None:
 
 
 # ---------- main flow (runs in the background) ----------
-def process_prospect(lead_id: str, payload: ProspectScanPayload) -> None:
+def process_prospect(lead_id: str, payload: ProspectScanPayload) -> dict:
     raw_web = clean_answer(payload.website_url) or ""
     raw_fb = clean_answer(payload.fb_page_url) or ""
     payload.ad_copy_sample = clean_answer(payload.ad_copy_sample)
@@ -537,7 +537,8 @@ def process_prospect(lead_id: str, payload: ProspectScanPayload) -> None:
     ai_failed = audit.startswith("ERROR")
     full_audit = audit if ai_failed else f"{audit.strip()}\n\n{signature_block()}"
 
-    has_email = bool(payload.email) and payload.consent
+    email_ready = bool(BREVO_API_KEY and SENDER_EMAIL)
+    has_email = bool(payload.email) and payload.consent and email_ready
     if ai_failed:
         status = "error"
     elif AUTO_SEND and has_email:
@@ -606,10 +607,40 @@ def process_prospect(lead_id: str, payload: ProspectScanPayload) -> None:
             {"text": "✅ Approve & email", "callback_data": f"approve:{lead_id}"},
             {"text": "❌ Reject", "callback_data": f"reject:{lead_id}"},
         ]
-    dispatch_prospect_telegram(text, buttons)
+    telegram_status = dispatch_prospect_telegram(text, buttons)
+    return {
+        "status": status,
+        "funnel_scenario": scenario,
+        "zalo_link": lead["zalo_link"],
+        "signals": signals,
+        "telegram_status": telegram_status,
+        "audit_report": full_audit,
+    }
 
 
-@app.post("/scan-prospect", status_code=202)
+def safe_process_prospect(lead_id: str, payload: ProspectScanPayload) -> None:
+    """Run the background job and report any crash to Telegram instead of failing silently."""
+    try:
+        print(f"[scan-prospect] start {lead_id} {payload.business_name}", flush=True)
+        process_prospect(lead_id, payload)
+        print(f"[scan-prospect] done {lead_id}", flush=True)
+    except Exception as e:
+        print(f"[scan-prospect] FAILED {lead_id}: {e!r}", flush=True)
+        dispatch_prospect_telegram(f"⚠️ Audit failed\nLead ID: {lead_id}\nClient: {payload.business_name}\nError: {e!r}")
+
+
+@app.get("/lead/{lead_id}")
+def lead_status(lead_id: str, x_api_key: Optional[str] = Header(default=None)):
+    """Quick check of a lead's status (same key as the form)."""
+    if FORM_API_KEY and x_api_key != FORM_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    lead = LEADS.get(lead_id)
+    if not lead:
+        return {"lead_id": lead_id, "status": "not_found_or_processing"}
+    return {"lead_id": lead_id, "status": lead.get("status"), "scenario": lead.get("scenario")}
+
+
+@app.post("/scan-prospect")
 def scan_prospect(
     payload: ProspectScanPayload,
     request: Request,
@@ -628,7 +659,17 @@ def scan_prospect(
         raise HTTPException(status_code=422, detail="Consent is required to email the audit.")
 
     lead_id = uuid.uuid4().hex[:10]
-    background_tasks.add_task(process_prospect, lead_id, payload)
+
+    if not (BREVO_API_KEY and SENDER_EMAIL):
+        # Email not set up yet: work like before - run now, send to Telegram, return the audit.
+        try:
+            result = process_prospect(lead_id, payload)
+        except Exception as e:
+            dispatch_prospect_telegram(f"⚠️ Audit failed\nLead ID: {lead_id}\nClient: {payload.business_name}\nError: {e!r}")
+            raise HTTPException(status_code=500, detail=f"Audit failed: {e!r}")
+        return {"lead_id": lead_id, **result}
+
+    background_tasks.add_task(safe_process_prospect, lead_id, payload)
     message = (
         "Bản audit sẽ được gửi qua email trong vài phút."
         if (payload.language or "vi").lower() == "vi"
