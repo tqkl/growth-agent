@@ -103,8 +103,8 @@ async def handle_mmp_event(signal: GrowthSignal):
 
 
 # ==========================================
-# PART 2: OPTION 1 HYBRID PROSPECT SCANNER
-# (PageSpeed Insights API + Meta Ad Copy Input)
+# PART 2: 3-SCENARIO B2B PROSPECT SCANNER
+# (Website Only | Fanpage Only | Both)
 # ==========================================
 class ProspectScanPayload(BaseModel):
     business_name: str
@@ -123,50 +123,75 @@ def normalize_url(url: str) -> str:
     return url
 
 
+def is_social_link(url: str) -> bool:
+    social_domains = ["facebook.com", "fb.com", "zalo.me", "tiktok.com", "instagram.com"]
+    return any(d in url.lower() for d in social_domains)
+
+
 def fetch_pagespeed_signals(url: str) -> dict:
     target = normalize_url(url)
+    signals = {
+        "ok": True,
+        "has_meta_pixel": False,
+        "has_gtm": False,
+        "has_ga4_or_gads": False,
+        "has_zalo_widget": False,
+        "mobile_score": "N/A",
+        "lcp_load_time": "N/A",
+        "fcp_load_time": "N/A",
+    }
+
+    # 1. Direct HTML tag scan (fast, never rate-limited)
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0"}
+        html_resp = requests.get(target, timeout=10, allow_redirects=True, headers=headers)
+        raw_html = html_resp.text.lower()
+        signals["has_meta_pixel"] = (
+            ("fbq(" in raw_html)
+            or ("connect.facebook.net" in raw_html)
+            or ("fbevents.js" in raw_html)
+        )
+        signals["has_gtm"] = ("googletagmanager.com/gtm.js" in raw_html) or ("gtm-" in raw_html)
+        signals["has_ga4_or_gads"] = (
+            ("gtag(" in raw_html) or ("googletagmanager.com/gtag/js" in raw_html)
+        )
+        signals["has_zalo_widget"] = "zalo.me" in raw_html
+    except Exception:
+        pass
+
+    # 2. Google PageSpeed Insights Mobile Speed + Dynamic GTM Network Requests
     endpoint = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
     params = {"url": target, "strategy": "mobile", "category": "performance"}
-
     if os.environ.get("PAGESPEED_API_KEY"):
         params["key"] = os.environ.get("PAGESPEED_API_KEY")
 
     try:
         r = requests.get(endpoint, params=params, timeout=45)
         data = r.json()
+        if "error" not in data:
+            lh = data.get("lighthouseResult") or {}
+            raw_score = (lh.get("categories") or {}).get("performance", {}).get("score")
+            audits = lh.get("audits") or {}
 
-        if "error" in data:
-            return {
-                "ok": False,
-                "error_code": data["error"].get("code"),
-                "error_message": data["error"].get("message"),
-            }
+            signals["mobile_score"] = round(raw_score * 100) if raw_score is not None else "N/A"
+            signals["lcp_load_time"] = (audits.get("largest-contentful-paint") or {}).get("displayValue", "N/A")
+            signals["fcp_load_time"] = (audits.get("first-contentful-paint") or {}).get("displayValue", "N/A")
 
-        lh = data.get("lighthouseResult") or {}
-        categories = lh.get("categories") or {}
-        perf = categories.get("performance") or {}
-        audits = lh.get("audits") or {}
+            # Also catch tags fired dynamically inside Google Tag Manager
+            net_items = ((audits.get("network-requests") or {}).get("details") or {}).get("items") or []
+            req_urls = " ".join(item.get("url", "") for item in net_items).lower()
+            if ("facebook.com/tr" in req_urls) or ("fbevents.js" in req_urls):
+                signals["has_meta_pixel"] = True
+            if "googletagmanager.com/gtm.js" in req_urls:
+                signals["has_gtm"] = True
+            if ("googletagmanager.com/gtag/js" in req_urls) or ("google-analytics.com" in req_urls):
+                signals["has_ga4_or_gads"] = True
+            if "zalo.me" in req_urls:
+                signals["has_zalo_widget"] = True
+    except Exception:
+        pass
 
-        raw_score = perf.get("score")
-        lcp = (audits.get("largest-contentful-paint") or {}).get("displayValue", "N/A")
-        fcp = (audits.get("first-contentful-paint") or {}).get("displayValue", "N/A")
-
-        net_items = ((audits.get("network-requests") or {}).get("details") or {}).get("items") or []
-        req_urls = " ".join(item.get("url", "") for item in net_items).lower()
-
-        return {
-            "ok": True,
-            "mode": "website_plus_ads",
-            "mobile_score": round(raw_score * 100) if raw_score is not None else "N/A",
-            "lcp_load_time": lcp,
-            "fcp_load_time": fcp,
-            "has_meta_pixel": ("facebook.com/tr" in req_urls) or ("fbevents.js" in req_urls),
-            "has_gtm": "googletagmanager.com/gtm.js" in req_urls,
-            "has_ga4_or_gads": ("googletagmanager.com/gtag/js" in req_urls) or ("google-analytics.com" in req_urls),
-            "has_zalo_widget": "zalo.me" in req_urls,
-        }
-    except Exception as e:
-        return {"ok": False, "error_message": str(e)}
+    return signals
 
 
 def generate_prospect_audit(payload: ProspectScanPayload, psi: dict) -> str:
@@ -175,27 +200,34 @@ def generate_prospect_audit(payload: ProspectScanPayload, psi: dict) -> str:
         return "ERROR: GEMINI_API_KEY missing on Render."
 
     output_lang = "Vietnamese" if payload.language.lower() == "vi" else "Simplified Chinese"
+    scenario = psi.get("funnel_scenario", "website_only")
+
     prompt = f"""
-You are a Senior B2B Performance Growth Strategist preparing a fast, high-value pre-call audit for an SME prospect in Vietnam.
+You are a Senior B2B Performance Growth Strategist preparing a sharp, high-value pre-call audit for an SME prospect in Vietnam.
 Business Name: {payload.business_name}
+Funnel Scenario: {scenario}
 Website URL: {payload.website_url or "None (Fanpage-only funnel)"}
 Facebook Page URL: {payload.fb_page_url or "Not provided"}
-Active Meta Ads Count (from Ad Library): {payload.active_ads_count if payload.active_ads_count is not None else "Not specified"}
-Live Facebook Ad Copy Sample:
+Active Meta Ads Count (if checked): {payload.active_ads_count if payload.active_ads_count is not None else "Not specified"}
+Live Facebook Ad Copy Sample (if provided):
 \"\"\"{payload.ad_copy_sample or "Not provided"}\"\"\"
 
-Technical Website & Tracking Signals (Google PageSpeed Insights):
+Confirmed Technical Signals:
 {psi}
 
-Write a sharp, persuasive 1-page audit in {output_lang} ready to paste directly into Zalo or Messenger. Use clean plain text and bullet points ONLY (strictly NO ** bold asterisks or ## headers). Include:
+STRICT RULES:
+- NEVER mention API limits, technical errors, or missing input fields in your response. Only analyze the confirmed data and funnel structure above.
+- Use clean plain text and bullet points ONLY (strictly NO ** bold asterisks or ## headers).
+
+Write a persuasive 1-page audit in {output_lang} ready to paste directly into Zalo or Messenger:
 1. 3 LỖ HỔNG ĐANG LÀM TĂNG CHI PHÍ QUẢNG CÁO (3 AD & FUNNEL LEAKS):
-   - If website signals exist: cite the exact mobile score, LCP load speed, and missing tags (Meta Pixel, GTM, GA4, Zalo widget) above.
-   - If Fanpage-only (no website): explain the conversion/retargeting leak of running Click-to-Inbox ads without a tracked landing page or Pixel.
-   - Always critique their live Facebook ad copy sample (or low active ad count) for weak hook, generic offer, or ad fatigue.
+   - If scenario is "both_website_and_fanpage" or "website_only": cite the exact mobile performance score, LCP load speed (if not N/A), and missing tracking tags (Meta Pixel, GTM, GA4, Zalo widget) above, explaining how they inflate CPL/CPA.
+   - If scenario is "fanpage_only": explain the conversion and retargeting leak of running Click-to-Messenger/Zalo ads without a tracked landing page or Meta Pixel (losing 95%+ of non-messaging visitors and relying solely on manual inbox closing).
+   - If live ad copy or active ads count is provided: critique the hook, offer clarity, or ad fatigue risk.
 2. 3 GỢI Ý HOOK VIDEO NGẮN ĐỂ QUAY DỰNG NGAY (3 PERFORMANCE VIDEO HOOKS):
-   - Write 3 specific 30-second video opening hooks tailored to this exact business and offer that an in-house media production team can shoot immediately.
+   - Write 3 specific 30-second video opening hooks tailored to this exact business and industry that an in-house media production team can shoot immediately.
 3. BƯỚC TIẾP THEO (15 PHÚT SOI TRỰC TIẾP TRÌNH QUẢNG CÁO):
-   - A 2-sentence invitation to open Ads Manager on a 15-minute screen-share to check bidding, audience overlap, and CPL together.
+   - A 2-sentence invitation to hop on a 15-minute screen-share to inspect their Ads Manager bidding, audience overlap, and CPL together.
 """
 
     try:
@@ -247,39 +279,73 @@ def dispatch_prospect_telegram(text: str) -> str:
 
 @app.post("/scan-prospect")
 def scan_prospect(payload: ProspectScanPayload):
-    has_website = bool(payload.website_url and payload.website_url.strip())
+    raw_web = (payload.website_url or "").strip()
+    raw_fb = (payload.fb_page_url or "").strip()
 
-    if has_website:
-        psi_data = fetch_pagespeed_signals(payload.website_url)
+    # Auto-sort if a prospect pasted a Facebook link into website_url or vice versa
+    clean_web = ""
+    clean_fb = ""
+
+    for item in [raw_web, raw_fb]:
+        if not item:
+            continue
+        if is_social_link(item) and not clean_fb:
+            clean_fb = item
+        elif not is_social_link(item) and not clean_web:
+            clean_web = item
+
+    payload.website_url = clean_web or None
+    payload.fb_page_url = clean_fb or None
+
+    if clean_web and clean_fb:
+        scenario = "both_website_and_fanpage"
+    elif clean_web:
+        scenario = "website_only"
+    elif clean_fb:
+        scenario = "fanpage_only"
+    else:
+        scenario = "no_url_niche_only"
+
+    if clean_web:
+        psi_data = fetch_pagespeed_signals(clean_web)
+        psi_data["funnel_scenario"] = scenario
     else:
         psi_data = {
             "ok": True,
-            "mode": "fanpage_only_no_website",
-            "note": "SME runs Click-to-Messenger/Zalo ads without an external website or Pixel landing page.",
+            "funnel_scenario": scenario,
+            "note": "SME runs Click-to-Messenger/Zalo ads on Fanpage without an external website or Pixel landing page.",
         }
 
     audit_report = generate_prospect_audit(payload, psi_data)
 
-    tech_summary = (
-        f"PageSpeed Mobile: {psi_data.get('mobile_score', 'N/A')}/100 | LCP: {psi_data.get('lcp_load_time', 'N/A')}\n"
-        f"Tags: MetaPixel={psi_data.get('has_meta_pixel')} | GTM={psi_data.get('has_gtm')} | Zalo={psi_data.get('has_zalo_widget')}\n"
-        if has_website
-        else f"Mode: Fanpage-Only Funnel | Active Ads Count: {payload.active_ads_count or 'N/A'}\n"
+    ad_lib_url = (
+        "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=VN&q="
+        + requests.utils.quote(payload.business_name)
     )
 
-    header = (
-        f"🔍 PROSPECT AUDIT READY (COPY FOR ZALO)\n"
-        f"Client: {payload.business_name}\n"
-        f"Website: {payload.website_url or 'None'}\n"
-        f"Fanpage: {payload.fb_page_url or 'N/A'}\n"
-        f"Contact: {payload.contact_info or 'N/A'}\n"
-        f"{tech_summary}"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-    )
+    lines = [
+        f"🔍 PROSPECT AUDIT READY [{scenario.upper()}]",
+        f"Client: {payload.business_name}",
+        f"Website: {clean_web or 'None'}",
+        f"Fanpage: {clean_fb or 'None'}",
+        f"Contact: {payload.contact_info or 'N/A'}",
+    ]
+    if clean_web:
+        lines.append(
+            f"Speed: Mobile {psi_data.get('mobile_score', 'N/A')}/100 | LCP {psi_data.get('lcp_load_time', 'N/A')}"
+        )
+        lines.append(
+            f"Tags: MetaPixel={psi_data.get('has_meta_pixel')} | GTM={psi_data.get('has_gtm')} | Zalo={psi_data.get('has_zalo_widget')}"
+        )
+    if clean_fb or scenario == "no_url_niche_only":
+        lines.append(f"Check Live Ads (15s): {ad_lib_url}")
+
+    header = "\n".join(lines) + "\n━━━━━━━━━━━━━━━━━━━━\n\n"
     telegram_status = dispatch_prospect_telegram(header + audit_report)
 
     return {
         "status": "processed",
+        "funnel_scenario": scenario,
         "pagespeed_signals": psi_data,
         "telegram_status": telegram_status,
         "audit_report": audit_report,
