@@ -141,6 +141,7 @@ async def handle_mmp_event(signal: GrowthSignal):
 # ==========================================
 class ProspectScanPayload(BaseModel):
     business_name: str
+    contact_name: Optional[str] = None
     industry: Optional[str] = None  # what they sell, e.g. "spa", "nhà hàng lẩu", "AI API"
     email: Optional[str] = None
     consent: bool = False  # prospect agreed to be contacted / receive the audit
@@ -152,7 +153,18 @@ class ProspectScanPayload(BaseModel):
     pain_point: Optional[str] = None
     monthly_budget: Optional[str] = None
     language: str = "vi"  # "vi" or "zh"
-    source: str = "inbound_form"  # "inbound_form", "outbound", "partner"
+    source: str = "inbound_form"  # "meta_lead_ads", "website_form", "outbound", "partner"
+
+
+EMPTY_ANSWERS = {"", "không", "khong", "chưa có", "chua co", "không có", "khong co", "no", "none", "n/a", "na", "-", "无", "没有", "暂无"}
+
+
+def clean_answer(value: Optional[str]) -> Optional[str]:
+    """Meta Instant Forms make every question required, so people type 'không' / 'chưa có'. Treat those as empty."""
+    if value is None:
+        return None
+    v = str(value).strip()
+    return None if v.lower() in EMPTY_ANSWERS else v
 
 
 LANG = {
@@ -457,7 +469,7 @@ def send_audit_email(lead: dict) -> str:
     lp = lang_pack(lead.get("language"))
     body = {
         "sender": {"name": SENDER_NAME, "email": SENDER_EMAIL},
-        "to": [{"email": email, "name": lead.get("business_name") or email}],
+        "to": [{"email": email, "name": lead.get("contact_name") or lead.get("business_name") or email}],
         "subject": lp["subject"].format(business=lead.get("business_name") or ""),
         "textContent": lead.get("audit") or "",
     }
@@ -492,8 +504,10 @@ def set_status(lead_id: str, status: str) -> None:
 
 # ---------- main flow (runs in the background) ----------
 def process_prospect(lead_id: str, payload: ProspectScanPayload) -> None:
-    raw_web = (payload.website_url or "").strip()
-    raw_fb = (payload.fb_page_url or "").strip()
+    raw_web = clean_answer(payload.website_url) or ""
+    raw_fb = clean_answer(payload.fb_page_url) or ""
+    payload.ad_copy_sample = clean_answer(payload.ad_copy_sample)
+    payload.industry = clean_answer(payload.industry)
     clean_web, clean_fb = "", ""
     for item in [raw_web, raw_fb]:
         if not item:
@@ -537,6 +551,7 @@ def process_prospect(lead_id: str, payload: ProspectScanPayload) -> None:
         "lead_id": lead_id,
         "source": payload.source,
         "business_name": payload.business_name,
+        "contact_name": payload.contact_name or "",
         "industry": payload.industry or "",
         "email": payload.email or "",
         "consent": "yes" if payload.consent else "no",
@@ -568,7 +583,7 @@ def process_prospect(lead_id: str, payload: ProspectScanPayload) -> None:
     header = [
         f"🔍 PROSPECT AUDIT [{scenario.upper()}] · {status.upper()}",
         f"Lead ID: {lead_id} · Source: {payload.source}",
-        f"Client: {payload.business_name} ({payload.industry or 'industry n/a'})",
+        f"Client: {payload.business_name} ({payload.industry or 'industry n/a'}) · Contact: {payload.contact_name or 'N/A'}",
         f"Email: {payload.email or 'N/A'} · Zalo: {lead['zalo_link']}",
         f"Pain point: {payload.pain_point or 'N/A'} | Budget: {payload.monthly_budget or 'N/A'}",
         f"Website: {clean_web or 'None'} · Fanpage: {clean_fb or 'None'}",
