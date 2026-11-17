@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from typing import Optional
 import requests
@@ -103,8 +104,7 @@ async def handle_mmp_event(signal: GrowthSignal):
 
 
 # ==========================================
-# PART 2: 3-SCENARIO B2B PROSPECT SCANNER
-# (Website Only | Fanpage Only | Both)
+# PART 2: 3-SCENARIO PROSPECT SCANNER + ZALO
 # ==========================================
 class ProspectScanPayload(BaseModel):
     business_name: str
@@ -113,6 +113,8 @@ class ProspectScanPayload(BaseModel):
     active_ads_count: Optional[int] = None
     ad_copy_sample: Optional[str] = None
     contact_info: Optional[str] = None
+    pain_point: Optional[str] = None
+    monthly_budget: Optional[str] = None
     language: str = "vi"  # "vi" or "zh"
 
 
@@ -126,6 +128,15 @@ def normalize_url(url: str) -> str:
 def is_social_link(url: str) -> bool:
     social_domains = ["facebook.com", "fb.com", "zalo.me", "tiktok.com", "instagram.com"]
     return any(d in url.lower() for d in social_domains)
+
+
+def build_zalo_link(contact: Optional[str]) -> str:
+    if not contact:
+        return "N/A"
+    digits = re.sub(r"\D", "", contact)
+    if digits.startswith("84") and len(digits) >= 11:
+        digits = "0" + digits[2:]
+    return f"https://zalo.me/{digits}" if len(digits) >= 9 else contact
 
 
 def fetch_pagespeed_signals(url: str) -> dict:
@@ -177,7 +188,6 @@ def fetch_pagespeed_signals(url: str) -> dict:
             signals["lcp_load_time"] = (audits.get("largest-contentful-paint") or {}).get("displayValue", "N/A")
             signals["fcp_load_time"] = (audits.get("first-contentful-paint") or {}).get("displayValue", "N/A")
 
-            # Also catch tags fired dynamically inside Google Tag Manager
             net_items = ((audits.get("network-requests") or {}).get("details") or {}).get("items") or []
             req_urls = " ".join(item.get("url", "") for item in net_items).lower()
             if ("facebook.com/tr" in req_urls) or ("fbevents.js" in req_urls):
@@ -203,11 +213,12 @@ def generate_prospect_audit(payload: ProspectScanPayload, psi: dict) -> str:
     scenario = psi.get("funnel_scenario", "website_only")
 
     prompt = f"""
-You are a Senior B2B Performance Growth Strategist preparing a sharp, high-value pre-call audit for an SME prospect in Vietnam.
+You are a Marketing Growth Strategist (chuyên gia chiến lược tăng trưởng marketing) preparing a sharp, high-value pre-call audit for a business in Vietnam.
 Business Name: {payload.business_name}
 Funnel Scenario: {scenario}
 Website URL: {payload.website_url or "None (Fanpage-only funnel)"}
 Facebook Page URL: {payload.fb_page_url or "Not provided"}
+Client Reported Pain Point: {payload.pain_point or "Not specified"}
 Active Meta Ads Count (if checked): {payload.active_ads_count if payload.active_ads_count is not None else "Not specified"}
 Live Facebook Ad Copy Sample (if provided):
 \"\"\"{payload.ad_copy_sample or "Not provided"}\"\"\"
@@ -216,11 +227,13 @@ Confirmed Technical Signals:
 {psi}
 
 STRICT RULES:
+- When writing in Vietnamese, introduce yourself in the opening sentence using the exact phrase: "tôi là chuyên gia chiến lược tăng trưởng marketing" (do NOT say "B2B").
 - NEVER mention API limits, technical errors, or missing input fields in your response. Only analyze the confirmed data and funnel structure above.
 - Use clean plain text and bullet points ONLY (strictly NO ** bold asterisks or ## headers).
 
 Write a persuasive 1-page audit in {output_lang} ready to paste directly into Zalo or Messenger:
 1. 3 LỖ HỔNG ĐANG LÀM TĂNG CHI PHÍ QUẢNG CÁO (3 AD & FUNNEL LEAKS):
+   - Address their reported pain point ({payload.pain_point or "rising ad costs"}) first.
    - If scenario is "both_website_and_fanpage" or "website_only": cite the exact mobile performance score, LCP load speed (if not N/A), and missing tracking tags (Meta Pixel, GTM, GA4, Zalo widget) above, explaining how they inflate CPL/CPA.
    - If scenario is "fanpage_only": explain the conversion and retargeting leak of running Click-to-Messenger/Zalo ads without a tracked landing page or Meta Pixel (losing 95%+ of non-messaging visitors and relying solely on manual inbox closing).
    - If live ad copy or active ads count is provided: critique the hook, offer clarity, or ad fatigue risk.
@@ -282,7 +295,6 @@ def scan_prospect(payload: ProspectScanPayload):
     raw_web = (payload.website_url or "").strip()
     raw_fb = (payload.fb_page_url or "").strip()
 
-    # Auto-sort if a prospect pasted a Facebook link into website_url or vice versa
     clean_web = ""
     clean_fb = ""
 
@@ -326,9 +338,10 @@ def scan_prospect(payload: ProspectScanPayload):
     lines = [
         f"🔍 PROSPECT AUDIT READY [{scenario.upper()}]",
         f"Client: {payload.business_name}",
+        f"Zalo Direct: {build_zalo_link(payload.contact_info)}",
+        f"Pain Point: {payload.pain_point or 'N/A'} | Budget: {payload.monthly_budget or 'N/A'}",
         f"Website: {clean_web or 'None'}",
         f"Fanpage: {clean_fb or 'None'}",
-        f"Contact: {payload.contact_info or 'N/A'}",
     ]
     if clean_web:
         lines.append(
@@ -346,6 +359,7 @@ def scan_prospect(payload: ProspectScanPayload):
     return {
         "status": "processed",
         "funnel_scenario": scenario,
+        "zalo_link": build_zalo_link(payload.contact_info),
         "pagespeed_signals": psi_data,
         "telegram_status": telegram_status,
         "audit_report": audit_report,
