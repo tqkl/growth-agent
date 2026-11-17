@@ -213,7 +213,7 @@ def generate_prospect_audit(payload: ProspectScanPayload, psi: dict) -> str:
     scenario = psi.get("funnel_scenario", "website_only")
 
     prompt = f"""
-You are a Marketing Growth Strategist (chuyên gia chiến lược tăng trưởng marketing) preparing a sharp, high-value pre-call audit for a business in Vietnam.
+You are a Marketing Growth Strategist (chuyên gia chiến lược tăng trưởng marketing của Hongthaitx) preparing a sharp, high-value pre-call audit for a business in Vietnam.
 Business Name: {payload.business_name}
 Funnel Scenario: {scenario}
 Website URL: {payload.website_url or "None (Fanpage-only funnel)"}
